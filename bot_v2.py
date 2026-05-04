@@ -585,10 +585,15 @@ def scan_and_update() -> tuple[int, int, int]:
                         else:
                             reason, label = "trailing_stop", "TRAILING"
                         pos["close_reason"] = reason
+                        # Update wins/losses based on PnL sign
+                        if pnl > 0:
+                            state["wins"] += 1
+                        else:
+                            state["losses"] += 1
                         closed += 1
                         sign = "+" if pnl >= 0 else ""
                         print(f"\n  [{label}] {loc['name']} {date} | "
-                              f"entry ${entry:.3f} → ${current_price:.3f} | PnL: {sign}{pnl:.2f}")
+                              f"entry ${entry:.3f} -> ${current_price:.3f} | PnL: {sign}{pnl:.2f}")
 
             # --- consider opening a position ---
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
@@ -789,10 +794,14 @@ def monitor_positions() -> int:
             pos["close_reason"], label = "stop_loss", "STOP"
         else:
             pos["close_reason"], label = "trailing_stop", "TRAILING"
+        if pnl > 0:
+            state["wins"] += 1
+        else:
+            state["losses"] += 1
         closed += 1
         sign = "+" if pnl >= 0 else ""
         print(f"  [{label}] {city_name} {mkt['date']} | "
-              f"${entry:.3f} → ${current:.3f} | {hours_left:.0f}h left | PnL: {sign}{pnl:.2f}")
+              f"${entry:.3f} -> ${current:.3f} | {hours_left:.0f}h left | PnL: {sign}{pnl:.2f}")
         save_market(mkt)
 
     if closed:

@@ -60,6 +60,7 @@ def _load_v2_state() -> dict:
 
     open_positions = []
     resolved = []
+    closed_by_bot = []  # stop-loss / take-profit / trailing / forecast-shift, NOT market resolution
     for m in markets:
         pos = m.get("position")
         if pos and pos.get("status") == "open":
@@ -72,7 +73,7 @@ def _load_v2_state() -> dict:
             open_positions.append({
                 "city":           m.get("city_name"),
                 "date":           m.get("date"),
-                "bucket":         f"{pos['bucket_low']}–{pos['bucket_high']}{m.get('unit', 'F')}",
+                "bucket":         f"{pos['bucket_low']}-{pos['bucket_high']}{m.get('unit', 'F')}",
                 "entry_price":    pos["entry_price"],
                 "current_price":  current,
                 "shares":         pos["shares"],
@@ -82,6 +83,16 @@ def _load_v2_state() -> dict:
                 "kelly":          pos.get("kelly"),
                 "forecast_src":   pos.get("forecast_src"),
                 "forecast_temp":  pos.get("forecast_temp"),
+            })
+        # Position closed by bot (stop / take / trailing / forecast shift) but market not yet resolved
+        if pos and pos.get("status") == "closed" and m.get("status") != "resolved":
+            closed_by_bot.append({
+                "city":          m.get("city_name"),
+                "date":          m.get("date"),
+                "reason":        pos.get("close_reason", "?"),
+                "pnl":           pos.get("pnl"),
+                "entry_price":   pos.get("entry_price"),
+                "exit_price":    pos.get("exit_price"),
             })
         if m.get("status") == "resolved" and m.get("pnl") is not None:
             resolved.append({
@@ -93,18 +104,33 @@ def _load_v2_state() -> dict:
             })
 
     resolved.sort(key=lambda r: r["date"], reverse=True)
-    total_pnl = round(sum(r["pnl"] or 0 for r in resolved), 2)
+    closed_by_bot.sort(key=lambda r: r["date"], reverse=True)
+
+    realized_pnl = round(
+        sum(r["pnl"] or 0 for r in resolved) +
+        sum(r["pnl"] or 0 for r in closed_by_bot), 2,
+    )
+    unrealized_pnl = round(sum(p["unrealized_pnl"] for p in open_positions), 2)
+    total_pnl = round(realized_pnl + unrealized_pnl, 2)
+
+    cash = state.get("balance", 0)
+    open_value = round(sum(p["cost"] + p["unrealized_pnl"] for p in open_positions), 2)
+    equity = round(cash + open_value, 2)
 
     return {
         "bot_version":  "v2",
-        "balance":      state.get("balance", 0),
+        "balance":      cash,                     # free cash, not invested
+        "equity":       equity,                   # cash + value of open positions
         "starting":     state.get("starting_balance", 0),
         "peak_balance": state.get("peak_balance", state.get("balance", 0)),
         "wins":         state.get("wins", 0),
         "losses":       state.get("losses", 0),
         "total_trades": state.get("total_trades", 0),
         "total_pnl":    total_pnl,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
         "open_positions": open_positions,
+        "closed_by_bot": closed_by_bot[:30],
         "resolved":     resolved[:50],
         "markets_total": len(markets),
     }

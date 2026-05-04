@@ -177,13 +177,18 @@
 </section>
 
 <section>
-  <h2>Recently Resolved</h2>
+  <h2>Closed by bot (stop-loss / take-profit / trailing)</h2>
+  <div id="closed-by-bot">Loading…</div>
+</section>
+
+<section>
+  <h2>Recently Resolved (Polymarket settlement)</h2>
   <div id="resolved">Loading…</div>
 </section>
 
 <script>
-const fmt$ = (n) => n == null ? "–" : "$" + Number(n).toFixed(2);
-const fmtPct = (n) => n == null ? "–" : (n >= 0 ? "+" : "") + Number(n).toFixed(1) + "%";
+const fmt$ = (n) => n == null ? "-" : "$" + Number(n).toFixed(2);
+const fmtPct = (n) => n == null ? "-" : (n >= 0 ? "+" : "") + Number(n).toFixed(1) + "%";
 const colorClass = (n) => n == null ? "" : n > 0 ? "green" : n < 0 ? "red" : "";
 
 async function fetchState() {
@@ -202,44 +207,54 @@ async function fetchState() {
 }
 
 function render(d) {
-  document.getElementById("bot-version").textContent = d.bot_version || "—";
+  document.getElementById("bot-version").textContent = d.bot_version || "-";
   document.getElementById("last-update").textContent =
     "Last update: " + new Date().toLocaleTimeString();
 
-  const ret = d.starting ? ((d.balance - d.starting) / d.starting * 100) : 0;
+  // Total return is from equity (cash + open positions value), not just cash
+  const equity = d.equity != null ? d.equity : d.balance;
+  const ret = d.starting ? ((equity - d.starting) / d.starting * 100) : 0;
+  const totalPnl = d.total_pnl != null ? d.total_pnl : 0;
+  const realized = d.realized_pnl != null ? d.realized_pnl : 0;
+  const unrealized = d.unrealized_pnl != null ? d.unrealized_pnl : 0;
+
   const cards = document.getElementById("cards");
   cards.innerHTML = `
     <div class="card">
-      <div class="card-label">Balance</div>
-      <div class="card-value">${fmt$(d.balance)}</div>
+      <div class="card-label">Equity (cash + positions)</div>
+      <div class="card-value">${fmt$(equity)}</div>
       <div class="card-sub ${colorClass(ret)}">${fmtPct(ret)} from ${fmt$(d.starting)}</div>
     </div>
     <div class="card">
+      <div class="card-label">Free Cash</div>
+      <div class="card-value">${fmt$(d.balance)}</div>
+      <div class="card-sub">not currently invested</div>
+    </div>
+    <div class="card">
       <div class="card-label">Total PnL</div>
-      <div class="card-value ${colorClass(d.total_pnl)}">${(d.total_pnl >= 0 ? "+" : "") + fmt$(d.total_pnl)}</div>
-      <div class="card-sub">across ${d.resolved.length} resolved</div>
+      <div class="card-value ${colorClass(totalPnl)}">${(totalPnl >= 0 ? "+" : "") + fmt$(totalPnl)}</div>
+      <div class="card-sub">
+        realized <span class="${colorClass(realized)}">${(realized >= 0 ? "+" : "") + fmt$(realized)}</span>
+        + unrealized <span class="${colorClass(unrealized)}">${(unrealized >= 0 ? "+" : "") + fmt$(unrealized)}</span>
+      </div>
     </div>
     <div class="card">
       <div class="card-label">Trades</div>
       <div class="card-value">${d.total_trades}</div>
       <div class="card-sub">
         <span class="green">${d.wins}W</span> / <span class="red">${d.losses}L</span>
-        ${d.wins + d.losses > 0 ? `· ${Math.round(100 * d.wins / (d.wins + d.losses))}% WR` : ""}
+        ${d.wins + d.losses > 0 ? `&middot; ${Math.round(100 * d.wins / (d.wins + d.losses))}% WR` : ""}
       </div>
     </div>
     <div class="card">
-      <div class="card-label">Open</div>
+      <div class="card-label">Open / Tracked</div>
       <div class="card-value">${d.open_positions.length}</div>
       <div class="card-sub">${d.markets_total} markets tracked</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Peak Balance</div>
-      <div class="card-value">${fmt$(d.peak_balance)}</div>
-      <div class="card-sub">all-time high</div>
     </div>
   `;
 
   renderOpen(d.open_positions);
+  renderClosedByBot(d.closed_by_bot || []);
   renderResolved(d.resolved);
 }
 
@@ -259,10 +274,10 @@ function renderOpen(list) {
   for (const p of list) {
     const cls = colorClass(p.unrealized_pnl);
     const sign = p.unrealized_pnl >= 0 ? "+" : "";
-    const fc = p.forecast_temp != null ? `${p.forecast_temp}° ${(p.forecast_src || "").toUpperCase()}` : "–";
+    const fc = p.forecast_temp != null ? `${p.forecast_temp}&deg; ${(p.forecast_src || "").toUpperCase()}` : "-";
     html += `<tr>
-      <td>${p.city || "–"}</td>
-      <td>${p.date || "–"}</td>
+      <td>${p.city || "-"}</td>
+      <td>${p.date || "-"}</td>
       <td>${p.bucket}</td>
       <td class="num">${fmt$(p.entry_price)}</td>
       <td class="num">${fmt$(p.current_price)}</td>
@@ -275,10 +290,39 @@ function renderOpen(list) {
   el.innerHTML = html;
 }
 
+function renderClosedByBot(list) {
+  const el = document.getElementById("closed-by-bot");
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">No bot-closed positions yet</div>';
+    return;
+  }
+  let html = `<table>
+    <thead><tr>
+      <th>City</th><th>Date</th><th>Reason</th>
+      <th class="num">Entry</th><th class="num">Exit</th>
+      <th class="num">PnL</th>
+    </tr></thead><tbody>`;
+  for (const r of list.slice(0, 30)) {
+    const cls = colorClass(r.pnl);
+    const sign = (r.pnl || 0) >= 0 ? "+" : "";
+    const reason = (r.reason || "").replace(/_/g, " ");
+    html += `<tr>
+      <td>${r.city || "-"}</td>
+      <td>${r.date || "-"}</td>
+      <td>${reason}</td>
+      <td class="num">${fmt$(r.entry_price)}</td>
+      <td class="num">${fmt$(r.exit_price)}</td>
+      <td class="num ${cls}">${sign}${fmt$(r.pnl)}</td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+  el.innerHTML = html;
+}
+
 function renderResolved(list) {
   const el = document.getElementById("resolved");
   if (!list.length) {
-    el.innerHTML = '<div class="empty">No resolved markets yet</div>';
+    el.innerHTML = '<div class="empty">No Polymarket-resolved markets yet</div>';
     return;
   }
   let html = `<table>
@@ -290,11 +334,11 @@ function renderResolved(list) {
     const cls = r.outcome === "win" ? "green" : r.outcome === "loss" ? "red" : "";
     const sign = (r.pnl || 0) >= 0 ? "+" : "";
     html += `<tr>
-      <td>${r.city || "–"}</td>
-      <td>${r.date || "–"}</td>
+      <td>${r.city || "-"}</td>
+      <td>${r.date || "-"}</td>
       <td class="${cls}">${(r.outcome || "").toUpperCase()}</td>
       <td class="num ${cls}">${sign}${fmt$(r.pnl)}</td>
-      <td class="num">${r.actual != null ? r.actual + "°" : "–"}</td>
+      <td class="num">${r.actual != null ? r.actual + "&deg;" : "-"}</td>
     </tr>`;
   }
   html += "</tbody></table>";
