@@ -1,0 +1,32 @@
+{
+  "_comment": "Shared config for bot_v1 and bot_v2. v1_* keys only for v1, v2_* only for v2, others shared. Risk limits live_* are only checked when LIVE_TRADING=true in .env.",
+
+  "balance": 1000.0,
+  "locations": "nyc,chicago,miami,dallas,seattle,atlanta",
+
+  "v1_entry_threshold": 0.15,
+  "v1_exit_threshold": 0.45,
+  "v1_max_trades_per_run": 5,
+  "v1_min_hours_to_resolution": 2,
+  "v1_position_pct": 0.05,
+
+  "v2_max_bet": 20.0,
+  "v2_min_ev": 0.10,
+  "v2_max_price": 0.45,
+  "v2_min_volume": 500,
+  "v2_min_hours": 2.0,
+  "v2_max_hours": 72.0,
+  "v2_kelly_fraction": 0.25,
+  "v2_max_slippage": 0.03,
+  "v2_scan_interval": 3600,
+  "v2_monitor_interval": 600,
+  "v2_calibration_min": 30,
+  "v2_locations_all": true,
+
+  "live_max_bet": 5.0,
+  "live_max_total_exposure": 100.0,
+  "live_max_open_positions": 10,
+  "live_daily_loss_limit": 20.0,
+  "live_min_balance": 50.0,
+  "live_dry_run_first": true
+}
