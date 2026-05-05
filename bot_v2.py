@@ -538,29 +538,36 @@ def scan_and_update() -> tuple[int, int, int]:
 
                 if current_price is not None:
                     entry = pos["entry_price"]
-                    stop = pos.get("stop_price", entry * 0.80)
+                    # absolute stop: 8 cents below entry (covers normal bid/ask spread + room to breathe)
+                    # NEVER move stop above entry until the market is in deep profit
+                    default_stop = max(0.01, entry - 0.08)
+                    stop = pos.get("stop_price", default_stop)
 
-                    # trailing: once 20% in profit, move stop to break-even
-                    if current_price >= entry * 1.20 and stop < entry:
-                        pos["stop_price"] = entry
+                    # trailing: only after position is up 100% (i.e. priced at 2x entry)
+                    # then move stop to entry + 4 cents (lock in some profit but give room)
+                    if current_price >= entry * 2.0 and stop < entry:
+                        pos["stop_price"] = round(entry + 0.04, 4)
                         pos["trailing_activated"] = True
 
-                    # decide take-profit threshold based on time-to-resolution
-                    if hours < 24:
-                        take_profit = None  # ride to resolution
+                    # take-profit: only when very close to settlement and price is high
+                    # let positions ride toward resolution where they're worth $1.00 if YES
+                    if hours < 6:
+                        take_profit = None       # final hours, hold to resolve
+                    elif hours < 24:
+                        take_profit = 0.92       # almost certain win, lock it
                     elif hours < 48:
                         take_profit = 0.85
                     else:
-                        take_profit = 0.75
+                        take_profit = 0.80
 
                     take_triggered = take_profit is not None and current_price >= take_profit
-                    stop_triggered = current_price <= pos.get("stop_price", entry * 0.80)
+                    stop_triggered = current_price <= pos.get("stop_price", default_stop)
                     forecast_shifted = False
 
                     # forecast-shift exit: forecast moved out of our bucket by margin
                     if forecast_temp is not None:
                         bl, bh = pos["bucket_low"], pos["bucket_high"]
-                        buf = 2.0 if loc["unit"] == "F" else 1.0
+                        buf = 3.0 if loc["unit"] == "F" else 1.5  # bigger buffer to stay in winners
                         if not in_bucket(forecast_temp, bl, bh):
                             if bl == -999:
                                 forecast_shifted = forecast_temp > bh + buf
@@ -585,7 +592,7 @@ def scan_and_update() -> tuple[int, int, int]:
                         else:
                             reason, label = "trailing_stop", "TRAILING"
                         pos["close_reason"] = reason
-                        # Update wins/losses based on PnL sign
+                        # Update wins/losses based on PnL sign (>0 = win, <=0 = loss/breakeven)
                         if pnl > 0:
                             state["wins"] += 1
                         else:
@@ -631,7 +638,7 @@ def scan_and_update() -> tuple[int, int, int]:
                                     "spread":        spread,
                                     "shares":        shares,
                                     "cost":          size,
-                                    "stop_price":    round(ask * 0.80, 4),
+                                    "stop_price":    round(max(0.01, ask - 0.08), 4),
                                     "p":             round(p, 4),
                                     "ev":            round(calc_ev(p, ask), 4),
                                     "kelly":         round(kelly, 4),
@@ -759,25 +766,29 @@ def monitor_positions() -> int:
         current = live["bid"]
 
         entry = pos["entry_price"]
-        stop = pos.get("stop_price", entry * 0.80)
+        default_stop = max(0.01, entry - 0.08)
+        stop = pos.get("stop_price", default_stop)
         loc = LOCATIONS.get(mkt["city"], {})
         city_name = loc.get("name", mkt["city"])
 
         hours_left = hours_until(mkt.get("event_end_date"))
-        if hours_left < 24:
+        if hours_left < 6:
             take_profit = None
+        elif hours_left < 24:
+            take_profit = 0.92
         elif hours_left < 48:
             take_profit = 0.85
         else:
-            take_profit = 0.75
+            take_profit = 0.80
 
-        if current >= entry * 1.20 and stop < entry:
-            pos["stop_price"] = entry
+        # only trail to entry+4c after position is up 100%
+        if current >= entry * 2.0 and stop < entry:
+            pos["stop_price"] = round(entry + 0.04, 4)
             pos["trailing_activated"] = True
-            print(f"  [TRAILING] {city_name} {mkt['date']} - stop → BE ${entry:.3f}")
+            print(f"  [TRAILING] {city_name} {mkt['date']} stop -> ${pos['stop_price']:.3f}")
 
         take_t = take_profit is not None and current >= take_profit
-        stop_t = current <= pos.get("stop_price", entry * 0.80)
+        stop_t = current <= pos.get("stop_price", default_stop)
 
         if not (take_t or stop_t):
             continue

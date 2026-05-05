@@ -171,6 +171,16 @@
 
 <div class="grid" id="cards"></div>
 
+<section id="cf-section" style="display:none;">
+  <h2>Counter-factual: what if we held to resolution?</h2>
+  <div style="font-size: 12px; color: var(--text-dim); margin-bottom: 12px;">
+    For every position the bot closed early (stop / take / trailing),
+    this section shows what the PnL would have been if held until Polymarket resolution.
+    If "Held PnL" is much greater than "Actual PnL", the strategy was right but bot management cut winners short.
+  </div>
+  <div id="counterfactuals">Loading…</div>
+</section>
+
 <section>
   <h2>Open Positions</h2>
   <div id="open-positions">Loading…</div>
@@ -211,7 +221,6 @@ function render(d) {
   document.getElementById("last-update").textContent =
     "Last update: " + new Date().toLocaleTimeString();
 
-  // Total return is from equity (cash + open positions value), not just cash
   const equity = d.equity != null ? d.equity : d.balance;
   const ret = d.starting ? ((equity - d.starting) / d.starting * 100) : 0;
   const totalPnl = d.total_pnl != null ? d.total_pnl : 0;
@@ -256,6 +265,65 @@ function render(d) {
   renderOpen(d.open_positions);
   renderClosedByBot(d.closed_by_bot || []);
   renderResolved(d.resolved);
+  renderCounterfactuals(d);
+}
+
+function renderCounterfactuals(d) {
+  const cfs = d.counterfactuals || [];
+  const section = document.getElementById("cf-section");
+  if (!cfs.length) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "block";
+
+  const heldPnl = d.cf_held_pnl != null ? d.cf_held_pnl : 0;
+  const actualPnl = d.cf_actual_pnl != null ? d.cf_actual_pnl : 0;
+  const missed = d.cf_missed != null ? d.cf_missed : 0;
+  const total = (d.cf_wins || 0) + (d.cf_losses || 0);
+  const wr = total > 0 ? Math.round(100 * d.cf_wins / total) : 0;
+
+  let html = `
+    <div class="grid" style="margin-bottom: 12px;">
+      <div class="card">
+        <div class="card-label">Bot's actual PnL on these</div>
+        <div class="card-value ${colorClass(actualPnl)}">${(actualPnl >= 0 ? "+" : "") + fmt$(actualPnl)}</div>
+        <div class="card-sub">${total} positions</div>
+      </div>
+      <div class="card">
+        <div class="card-label">If held to resolve</div>
+        <div class="card-value ${colorClass(heldPnl)}">${(heldPnl >= 0 ? "+" : "") + fmt$(heldPnl)}</div>
+        <div class="card-sub">
+          <span class="green">${d.cf_wins || 0}W</span> /
+          <span class="red">${d.cf_losses || 0}L</span>
+          ${total > 0 ? ` &middot; ${wr}% WR` : ""}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Money left on table</div>
+        <div class="card-value ${colorClass(missed)}">${(missed >= 0 ? "+" : "") + fmt$(missed)}</div>
+        <div class="card-sub">held - actual</div>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>City</th><th>Date</th><th>Reason</th>
+        <th class="num">Actual PnL</th><th class="num">Held PnL</th><th class="num">Missed</th>
+      </tr></thead><tbody>`;
+  for (const cf of cfs.slice(0, 30)) {
+    const cls = colorClass(cf.missed);
+    const sign = (cf.missed || 0) >= 0 ? "+" : "";
+    html += `<tr>
+      <td>${cf.city || "-"}</td>
+      <td>${cf.date || "-"}</td>
+      <td>${(cf.reason || "").replace(/_/g, " ")}</td>
+      <td class="num ${colorClass(cf.actual_pnl)}">${(cf.actual_pnl || 0) >= 0 ? "+" : ""}${fmt$(cf.actual_pnl)}</td>
+      <td class="num ${colorClass(cf.held_pnl)}">${(cf.held_pnl || 0) >= 0 ? "+" : ""}${fmt$(cf.held_pnl)}</td>
+      <td class="num ${cls}">${sign}${fmt$(cf.missed)}</td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+  document.getElementById("counterfactuals").innerHTML = html;
 }
 
 function renderOpen(list) {

@@ -6,10 +6,10 @@ Serves a single-page HTML view of:
   - Bankroll (state.json)
   - Open positions
   - Resolved markets / PnL
-  - Recent forecast and market snapshots
+  - Counter-factual analysis (what if held to resolve)
 
 Auto-detects which bot is running:
-  - If data/state.json exists → reads v2 layout
+  - If data/state.json exists -> reads v2 layout
   - Else, falls back to simulation.json (v1 layout)
 
 Run:
@@ -28,19 +28,18 @@ from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
 
-# Allow running this script from any CWD
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 DATA_DIR = ROOT / "data"
 STATE_FILE = DATA_DIR / "state.json"
 MARKETS_DIR = DATA_DIR / "markets"
-SIM_FILE = ROOT / "simulation.json"  # v1's data file
+SIM_FILE = ROOT / "simulation.json"
 
 app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"), static_url_path="")
 
 
-def _read_json(path: Path) -> dict | list | None:
+def _read_json(path: Path):
     if not path.exists():
         return None
     try:
@@ -60,7 +59,12 @@ def _load_v2_state() -> dict:
 
     open_positions = []
     resolved = []
-    closed_by_bot = []  # stop-loss / take-profit / trailing / forecast-shift, NOT market resolution
+    closed_by_bot = []
+    counterfactuals = []
+    cf_total_actual = 0.0
+    cf_total_held = 0.0
+    cf_wins = cf_losses = 0
+
     for m in markets:
         pos = m.get("position")
         if pos and pos.get("status") == "open":
@@ -84,16 +88,56 @@ def _load_v2_state() -> dict:
                 "forecast_src":   pos.get("forecast_src"),
                 "forecast_temp":  pos.get("forecast_temp"),
             })
-        # Position closed by bot (stop / take / trailing / forecast shift) but market not yet resolved
-        if pos and pos.get("status") == "closed" and m.get("status") != "resolved":
-            closed_by_bot.append({
-                "city":          m.get("city_name"),
-                "date":          m.get("date"),
-                "reason":        pos.get("close_reason", "?"),
-                "pnl":           pos.get("pnl"),
-                "entry_price":   pos.get("entry_price"),
-                "exit_price":    pos.get("exit_price"),
-            })
+
+        if pos and pos.get("status") == "closed":
+            actual_pnl = pos.get("pnl")
+            close_reason = pos.get("close_reason", "?")
+
+            held_pnl = None
+            actual_temp = m.get("actual_temp")
+            outcome = m.get("resolved_outcome")
+            entry_price = pos.get("entry_price", 0)
+            shares = pos.get("shares", 0)
+            bl = pos.get("bucket_low")
+            bh = pos.get("bucket_high")
+
+            if actual_temp is not None and bl is not None and bh is not None:
+                if bl <= actual_temp <= bh:
+                    held_pnl = round((1.0 - entry_price) * shares, 2)
+                else:
+                    held_pnl = round(-entry_price * shares, 2)
+            elif outcome == "win":
+                held_pnl = round((1.0 - entry_price) * shares, 2)
+            elif outcome == "loss":
+                held_pnl = round(-entry_price * shares, 2)
+
+            if m.get("status") != "resolved":
+                closed_by_bot.append({
+                    "city":          m.get("city_name"),
+                    "date":          m.get("date"),
+                    "reason":        close_reason,
+                    "pnl":           actual_pnl,
+                    "entry_price":   pos.get("entry_price"),
+                    "exit_price":    pos.get("exit_price"),
+                })
+
+            if held_pnl is not None and close_reason in ("stop_loss", "trailing_stop", "take_profit", "forecast_changed"):
+                missed = round((held_pnl or 0) - (actual_pnl or 0), 2)
+                counterfactuals.append({
+                    "city":          m.get("city_name"),
+                    "date":          m.get("date"),
+                    "reason":        close_reason,
+                    "actual_pnl":    actual_pnl,
+                    "held_pnl":      held_pnl,
+                    "missed":        missed,
+                })
+                cf_total_actual += actual_pnl or 0
+                cf_total_held += held_pnl or 0
+                if (held_pnl or 0) > 0:
+                    cf_wins += 1
+                else:
+                    cf_losses += 1
+
         if m.get("status") == "resolved" and m.get("pnl") is not None:
             resolved.append({
                 "city":     m.get("city_name"),
@@ -105,6 +149,7 @@ def _load_v2_state() -> dict:
 
     resolved.sort(key=lambda r: r["date"], reverse=True)
     closed_by_bot.sort(key=lambda r: r["date"], reverse=True)
+    counterfactuals.sort(key=lambda r: abs(r.get("missed") or 0), reverse=True)
 
     realized_pnl = round(
         sum(r["pnl"] or 0 for r in resolved) +
@@ -119,8 +164,8 @@ def _load_v2_state() -> dict:
 
     return {
         "bot_version":  "v2",
-        "balance":      cash,                     # free cash, not invested
-        "equity":       equity,                   # cash + value of open positions
+        "balance":      cash,
+        "equity":       equity,
         "starting":     state.get("starting_balance", 0),
         "peak_balance": state.get("peak_balance", state.get("balance", 0)),
         "wins":         state.get("wins", 0),
@@ -133,6 +178,12 @@ def _load_v2_state() -> dict:
         "closed_by_bot": closed_by_bot[:30],
         "resolved":     resolved[:50],
         "markets_total": len(markets),
+        "counterfactuals":   counterfactuals[:30],
+        "cf_actual_pnl":     round(cf_total_actual, 2),
+        "cf_held_pnl":       round(cf_total_held, 2),
+        "cf_missed":         round(cf_total_held - cf_total_actual, 2),
+        "cf_wins":           cf_wins,
+        "cf_losses":         cf_losses,
     }
 
 
@@ -184,7 +235,6 @@ def _load_v1_state() -> dict:
 
 @app.route("/api/state")
 def api_state():
-    """Return whichever bot has data; v2 takes priority if both exist."""
     if STATE_FILE.exists():
         return jsonify(_load_v2_state())
     if SIM_FILE.exists():
